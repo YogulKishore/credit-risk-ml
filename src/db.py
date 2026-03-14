@@ -3,8 +3,6 @@ import psycopg2
 import psycopg2.extras
 import pandas as pd
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
 DB_CONFIG = {
     "host": "localhost",
     "port": 5432,
@@ -15,8 +13,9 @@ DB_CONFIG = {
 
 
 def get_connection():
-    if DATABASE_URL:
-        return psycopg2.connect(DATABASE_URL, sslmode="require")
+    database_url = os.environ.get("DATABASE_URL")
+    if database_url:
+        return psycopg2.connect(database_url, sslmode="require")
     return psycopg2.connect(**DB_CONFIG)
 
 
