@@ -11,7 +11,8 @@ sys.path.append(str(ROOT))
 import requests
 from src.db import fetch_all_applications, create_tables
 
-API_URL = "http://localhost:8000"
+import os
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 # ensure table exists
 import io, contextlib
