@@ -13,6 +13,19 @@ An end-to-end machine learning system for predicting credit default risk, built 
 
 ---
 
+
+## Screenshots
+
+### Application Form
+![Form](screenshots/screenshot_form.png)
+
+### Prediction Result
+![Result](screenshots/screenshot_result.png)
+
+### Submission History
+![History](screenshots/screenshot_history.png)
+
+---
 ## Architecture
 
 ```
