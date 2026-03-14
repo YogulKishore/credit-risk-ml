@@ -184,6 +184,9 @@ def predict_single(app_df):
 
     X = pd.DataFrame({col: [np.nan] for col in feature_cols})
 
+    # cast all columns to object first to allow mixed types
+    X = X.astype(object)
+    
     for col in app_df.columns:
         if col in X.columns:
             X.loc[0, col] = app_df.iloc[0][col]
