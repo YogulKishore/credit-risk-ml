@@ -11,8 +11,7 @@ sys.path.append(str(ROOT))
 import requests
 from src.db import fetch_all_applications, create_tables
 
-import os
-API_URL = os.environ.get("API_URL", "http://localhost:8000")
+API_URL = "http://localhost:8000"
 
 # ensure table exists
 import io, contextlib
@@ -379,7 +378,9 @@ elif page == "History":
     st.title("Submission History")
 
     try:
-        df = fetch_all_applications()
+        response = requests.get(f"{API_URL}/applications")
+        response.raise_for_status()
+        df = pd.DataFrame(response.json())
 
         if df.empty:
             st.info("No submissions yet.")
@@ -412,7 +413,9 @@ elif page == "Dashboard":
     st.title("Dashboard")
 
     try:
-        df = fetch_all_applications()
+        resp0 = requests.get(f"{API_URL}/applications")
+        resp0.raise_for_status()
+        df = pd.DataFrame(resp0.json())
 
         if df.empty:
             st.info("No submissions yet.")
