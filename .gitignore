@@ -2,7 +2,7 @@
 data/
 
 # Models - keep pkl files but skip large CSVs
-models/oof_predictions.csv
+models/
 
 # Python
 __pycache__/
