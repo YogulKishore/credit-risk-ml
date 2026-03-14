@@ -1,0 +1,23 @@
+# Data files (too large for GitHub)
+data/
+
+# Models - keep pkl files but skip large CSVs
+models/oof_predictions.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+*.ipynb
+
+# Environments
+.env
+venv/
+env/
+
+# Outputs
+outputs/
+
+# OS
+.DS_Store
+Thumbs.db
