@@ -14,9 +14,7 @@ from src.db import fetch_all_applications, create_tables
 API_URL = "http://localhost:8000"
 
 # ensure table exists
-import io, contextlib
-with contextlib.redirect_stdout(io.StringIO()):
-    create_tables()
+
 
 st.set_page_config(page_title="Credit Risk System", layout="wide")
 
