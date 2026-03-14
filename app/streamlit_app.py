@@ -24,7 +24,7 @@ st.set_page_config(page_title="Credit Risk System", layout="wide")
 # Pages
 # ------------------------------------------------
 
-page = st.sidebar.radio("Navigation", ["Predict", "History"])
+page = st.sidebar.radio("Navigation", ["Predict", "History", "Dashboard"])
 
 
 # ================================================
@@ -285,9 +285,9 @@ if page == "Predict":
                 st.subheader("Individual Model Scores")
 
                 m1, m2, m3 = st.columns(3)
-                m1.metric("LightGBM", f"{result['lgb_score']:.2%}")
-                m2.metric("XGBoost",  f"{result['xgb_score']:.2%}")
-                m3.metric("CatBoost", f"{result['cat_score']:.2%}")
+                m1.metric("LightGBM", f"{result['lgb']:.2%}")
+                m2.metric("XGBoost",  f"{result['xgb']:.2%}")
+                m3.metric("CatBoost", f"{result['cat']:.2%}")
 
                 st.divider()
 
@@ -400,3 +400,172 @@ elif page == "History":
     except Exception as e:
         st.error("Could not load history.")
         st.write(e)
+
+
+# ================================================
+# PAGE 3 — DASHBOARD
+# ================================================
+
+elif page == "Dashboard":
+
+    st.title("Dashboard")
+
+    try:
+        df = fetch_all_applications()
+
+        if df.empty:
+            st.info("No submissions yet.")
+        else:
+            import plotly.express as px
+            import plotly.graph_objects as go
+            from src.db import get_connection
+            import pandas as pd
+
+            # load full data with extra columns for breakdowns
+            conn = get_connection()
+            full_df = pd.read_sql("""
+                SELECT submitted_at, full_name, gender, age, income, loan_amount,
+                       education, family_status, owns_car, owns_house,
+                       stacked_score, lgb_score, xgb_score, cat_score, risk_label
+                FROM applications
+                ORDER BY submitted_at ASC
+            """, conn)
+            conn.close()
+
+            full_df["submitted_at"] = pd.to_datetime(full_df["submitted_at"])
+            full_df["date"] = full_df["submitted_at"].dt.date
+
+            # ------------------------------------------------
+            # Top metrics
+            # ------------------------------------------------
+            st.subheader("Overview")
+
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total Applications", len(full_df))
+            m2.metric("High Risk", len(full_df[full_df["risk_label"] == "High Risk"]))
+            m3.metric("Medium Risk", len(full_df[full_df["risk_label"] == "Medium Risk"]))
+            m4.metric("Low Risk", len(full_df[full_df["risk_label"] == "Low Risk"]))
+
+            st.divider()
+
+            # ------------------------------------------------
+            # Row 1: Risk distribution + Score histogram
+            # ------------------------------------------------
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.subheader("Risk Distribution")
+                risk_counts = full_df["risk_label"].value_counts().reset_index()
+                risk_counts.columns = ["Risk Label", "Count"]
+                colors = {"Low Risk": "#28a745", "Medium Risk": "#ffc107", "High Risk": "#dc3545"}
+                fig = px.pie(
+                    risk_counts, names="Risk Label", values="Count",
+                    color="Risk Label", color_discrete_map=colors,
+                    hole=0.4
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col2:
+                st.subheader("Stacked Score Distribution")
+                fig = px.histogram(
+                    full_df, x="stacked_score", nbins=30,
+                    color_discrete_sequence=["#636EFA"],
+                    labels={"stacked_score": "Default Probability"}
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # ------------------------------------------------
+            # Row 2: Model score comparison + Scores over time
+            # ------------------------------------------------
+            col3, col4 = st.columns(2)
+
+            with col3:
+                st.subheader("Model Score Comparison")
+                fig = go.Figure()
+                for model, color in [("lgb_score", "#00CC96"), ("xgb_score", "#AB63FA"), ("cat_score", "#FFA15A"), ("stacked_score", "#636EFA")]:
+                    fig.add_trace(go.Box(y=full_df[model], name=model.replace("_score", "").upper(), marker_color=color))
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white", showlegend=False)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col4:
+                st.subheader("Average Score Over Time")
+                daily = full_df.groupby("date")["stacked_score"].mean().reset_index()
+                fig = px.line(
+                    daily, x="date", y="stacked_score",
+                    labels={"stacked_score": "Avg Default Probability", "date": "Date"},
+                    color_discrete_sequence=["#636EFA"]
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # ------------------------------------------------
+            # Row 3: Risk by education + Risk by gender
+            # ------------------------------------------------
+            col5, col6 = st.columns(2)
+
+            with col5:
+                st.subheader("Risk by Education")
+                edu = full_df.groupby(["education", "risk_label"]).size().reset_index(name="count")
+                fig = px.bar(
+                    edu, x="education", y="count", color="risk_label",
+                    color_discrete_map={"Low Risk": "#28a745", "Medium Risk": "#ffc107", "High Risk": "#dc3545"},
+                    barmode="stack",
+                    labels={"education": "Education", "count": "Count"}
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white", xaxis_tickangle=-20)
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col6:
+                st.subheader("Risk by Gender")
+                gen = full_df.groupby(["gender", "risk_label"]).size().reset_index(name="count")
+                fig = px.bar(
+                    gen, x="gender", y="count", color="risk_label",
+                    color_discrete_map={"Low Risk": "#28a745", "Medium Risk": "#ffc107", "High Risk": "#dc3545"},
+                    barmode="group",
+                    labels={"gender": "Gender", "count": "Count"}
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+            st.divider()
+
+            # ------------------------------------------------
+            # Row 4: Income vs score scatter + Risk by family status
+            # ------------------------------------------------
+            col7, col8 = st.columns(2)
+
+            with col7:
+                st.subheader("Income vs Default Probability")
+                fig = px.scatter(
+                    full_df, x="income", y="stacked_score",
+                    color="risk_label",
+                    color_discrete_map={"Low Risk": "#28a745", "Medium Risk": "#ffc107", "High Risk": "#dc3545"},
+                    labels={"income": "Annual Income", "stacked_score": "Default Probability"},
+                    opacity=0.7
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white")
+                st.plotly_chart(fig, use_container_width=True)
+
+            with col8:
+                st.subheader("Risk by Family Status")
+                fam = full_df.groupby(["family_status", "risk_label"]).size().reset_index(name="count")
+                fig = px.bar(
+                    fam, x="family_status", y="count", color="risk_label",
+                    color_discrete_map={"Low Risk": "#28a745", "Medium Risk": "#ffc107", "High Risk": "#dc3545"},
+                    barmode="stack",
+                    labels={"family_status": "Family Status", "count": "Count"}
+                )
+                fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", font_color="white", xaxis_tickangle=-20)
+                st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error("Could not load dashboard.")
+        st.write(e)
+        import traceback
+        st.code(traceback.format_exc())

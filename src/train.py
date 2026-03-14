@@ -10,6 +10,10 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 
+import mlflow
+import mlflow.sklearn
+import mlflow.lightgbm
+import mlflow.xgboost
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
@@ -311,6 +315,43 @@ def train_models(X, y, X_test, test_ids):
 
     oof_df.to_csv("models/oof_predictions.csv", index=False)
 
+    # ----------------------------
+    # MLflow Logging
+    # ----------------------------
+
+    mlflow.set_experiment("credit-risk")
+
+    with mlflow.start_run(run_name="stacked_ensemble"):
+
+        # log metrics
+        mlflow.log_metric("lgb_roc_auc",    roc_auc_score(y, lgb_preds))
+        mlflow.log_metric("xgb_roc_auc",    roc_auc_score(y, xgb_preds))
+        mlflow.log_metric("cat_roc_auc",    roc_auc_score(y, cat_preds))
+        mlflow.log_metric("stacked_roc_auc", roc_auc_score(y, final_preds))
+
+        # log params
+        mlflow.log_param("n_folds", 5)
+        mlflow.log_param("lgb_n_estimators", 5000)
+        mlflow.log_param("lgb_learning_rate", 0.05)
+        mlflow.log_param("lgb_num_leaves", 64)
+        mlflow.log_param("xgb_n_estimators", 5000)
+        mlflow.log_param("xgb_learning_rate", 0.05)
+        mlflow.log_param("xgb_max_depth", 6)
+        mlflow.log_param("cat_iterations", 5000)
+        mlflow.log_param("cat_learning_rate", 0.05)
+        mlflow.log_param("cat_depth", 6)
+        mlflow.log_param("meta_model", "LogisticRegression")
+
+        # log models
+        mlflow.sklearn.log_model(meta_model, "stack_model")
+        mlflow.lightgbm.log_model(lgb_model.named_steps["model"], "lgb_model")
+        mlflow.xgboost.log_model(xgb_pipeline.named_steps["model"], "xgb_model")
+
+        # log feature columns artifact
+        mlflow.log_artifact("models/feature_columns.pkl")
+        mlflow.log_artifact("models/oof_predictions.csv")
+
+        print("MLflow run logged.")
 
     # SAVE MODELS
     # SAVE FEATURE ORDER

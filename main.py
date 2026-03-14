@@ -8,7 +8,7 @@ from pydantic import BaseModel
 import pandas as pd
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[0]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT))
 
 from src.predict import predict_single
