@@ -15,6 +15,7 @@ DB_CONFIG = {
 def get_connection():
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
+        database_url = database_url.replace("postgres://", "postgresql://", 1)
         return psycopg2.connect(database_url, sslmode="require")
     return psycopg2.connect(**DB_CONFIG)
 
