@@ -11,7 +11,7 @@ sys.path.append(str(ROOT))
 import requests
 from src.db import fetch_all_applications, create_tables
 
-API_URL = "http://localhost:8000"
+API_URL = st.secrets.get("API_URL", "http://localhost:8000")
 
 # ensure table exists
 
