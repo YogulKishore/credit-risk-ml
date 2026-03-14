@@ -107,7 +107,10 @@ def predict(input: ApplicantInput):
     try:
         result = predict_single(app_df)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        tb = traceback.format_exc()
+        print(tb)
+        raise HTTPException(status_code=500, detail=tb)
 
     risk = result["stacked"]
     if risk < 0.2:
