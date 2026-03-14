@@ -21,3 +21,9 @@ outputs/
 # OS
 .DS_Store
 Thumbs.db
+
+mlruns/
+mlflow.db
+catboost_info/
+screenshot_*.png
+notebook/
