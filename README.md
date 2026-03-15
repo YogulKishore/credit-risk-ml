@@ -1,82 +1,98 @@
 # Credit Risk Prediction System
 
-![Python](https://img.shields.io/badge/Python-3.10-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green?logo=fastapi)
-![Streamlit](https://img.shields.io/badge/Streamlit-1.30+-red?logo=streamlit)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15-blue?logo=postgresql)
-![Docker](https://img.shields.io/badge/Docker-containerized-blue?logo=docker)
-![LightGBM](https://img.shields.io/badge/LightGBM-ensemble-yellow)
-![XGBoost](https://img.shields.io/badge/XGBoost-ensemble-orange)
-![CatBoost](https://img.shields.io/badge/CatBoost-ensemble-purple)
+A production-grade machine learning system for predicting credit default risk, built on the [Home Credit Default Risk](https://www.kaggle.com/c/home-credit-default-risk) dataset. Features a stacked ensemble of LightGBM, XGBoost, and CatBoost models served via a FastAPI backend and an interactive Gradio frontend.
 
-An end-to-end machine learning system for predicting credit default risk, built on the [Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk) Kaggle dataset. Features a stacked ensemble model served via a REST API with a full-stack web interface and persistent storage.
+🔗 **Live Demo:** [Hugging Face Spaces](https://huggingface.co/spaces/Betelgeuse4096/credit_risk)  
+📦 **API:** [Railway](https://credit-risk-ml-production-8f03.up.railway.app/docs)  
+📁 **Repo:** [GitHub](https://github.com/YogulKishore/credit-risk-ml)
 
 ---
 
-
-## Screenshots
-
-### Application Form
-![Form](screenshots/screenshot_form.png)
-
-### Prediction Result
-![Result](screenshots/screenshot_result.png)
-
-### Submission History
-![History](screenshots/screenshot_history.png)
-
----
 ## Architecture
 
 ```
-┌─────────────────────┐        HTTP POST /predict        ┌─────────────────────────┐
-│                     │ ──────────────────────────────►  │                         │
-│  Streamlit Frontend │                                   │   FastAPI Backend       │
-│  (app/streamlit_    │ ◄──────────────────────────────  │   (api/main.py)         │
-│   app.py)           │        JSON response              │                         │
-└─────────────────────┘                                   └───────────┬─────────────┘
-                                                                      │
-                                                          ┌───────────▼─────────────┐
-                                                          │                         │
-                                                          │   Ensemble ML Model     │
-                                                          │   LGB + XGB + CatBoost  │
-                                                          │   + Stacking Layer      │
-                                                          │                         │
-                                                          └───────────┬─────────────┘
-                                                                      │
-                                                          ┌───────────▼─────────────┐
-                                                          │                         │
-                                                          │   PostgreSQL (Docker)   │
-                                                          │   - applications table  │
-                                                          │   - application_features│
-                                                          │     (167 features)      │
-                                                          └─────────────────────────┘
+Hugging Face Spaces          Railway (Docker)
+────────────────────         ──────────────────────
+Gradio Frontend     ──────▶  FastAPI Backend
+                                  │
+                                  ├── LightGBM
+                                  ├── XGBoost
+                                  ├── CatBoost
+                                  └── Stacked Meta-Model
+                                  │
+                                  ▼
+                             PostgreSQL Database
 ```
 
 ---
 
 ## Model Performance
 
-| Model | ROC-AUC | PR-AUC | Log Loss |
-|---|---|---|---|
-| LightGBM | 0.7818 | 0.2734 | 0.2388 |
-| XGBoost | 0.7844 | 0.2765 | 0.2379 |
-| CatBoost | 0.7863 | 0.2796 | 0.2373 |
-| **Stacked Ensemble** | **0.7875** | **0.2820** | 0.2439 |
+All metrics evaluated on out-of-fold (OOF) predictions using 5-fold stratified cross-validation.
 
-> Evaluated on out-of-fold (OOF) predictions using 5-fold stratified cross validation.
-> Best F1 threshold: **0.119** — Precision: 0.279, Recall: 0.431, F1: 0.339
+| Model       | ROC-AUC | PR-AUC | Log Loss |
+|-------------|---------|--------|----------|
+| LightGBM    | 0.7818  | 0.2734 | 0.2388   |
+| XGBoost     | 0.7844  | 0.2765 | 0.2379   |
+| CatBoost    | 0.7865  | 0.2794 | 0.2373   |
+| **Stacked** | **0.7876** | **0.2820** | 0.2439 |
+
+Optimal classification threshold tuned via F1 maximization on the PR curve:  
+- **Best threshold:** 0.117  
+- **Recall:** 0.437 &nbsp;|&nbsp; **Precision:** 0.276 &nbsp;|&nbsp; **F1:** 0.338
 
 ---
 
 ## Features
 
-- **Stacked Ensemble** — LightGBM + XGBoost + CatBoost base models with Logistic Regression meta-model
-- **167 engineered features** — application data, bureau history, POS cash, installments, credit card balances
-- **FastAPI backend** — REST API with auto-generated Swagger docs at `/docs`
-- **Streamlit frontend** — interactive form with randomize button, processing log, feature table
-- **PostgreSQL storage** — all submissions + full 167-feature vectors stored per prediction
-- **Docker** — Postgres runs in a container via `docker-compose`
+- **Predict** — fill in applicant details and get an instant default probability with per-model breakdown
+- **Randomize** — generate synthetic applicants for quick testing
+- **History** — view all past predictions stored in PostgreSQL
+- **Dashboard** — risk distribution, score histograms, model comparisons, breakdowns by education, gender, and family status
+
+---
+
+## Feature Engineering
+
+Features are engineered from 7 raw tables:
+
+- `application_train/test` — core applicant and loan details
+- `bureau` + `bureau_balance` — external credit history
+- `previous_application` — past loan applications
+- `POS_CASH_balance` — point-of-sale and cash loan history
+- `installments_payments` — repayment history
+- `credit_card_balance` — credit card usage
+
+Key engineered features include credit/income ratio, annuity/income ratio, EXT_SOURCE mean, payment delay statistics, and bureau loan counts.
+
+---
+
+## SHAP Feature Importance
+
+Top features driving predictions (LightGBM, SHAP TreeExplainer):
+
+| Feature | Impact |
+|---------|--------|
+| EXT_SOURCE_MEAN | Strongest negative risk signal — higher scores = lower default |
+| PAYMENT_DELAY_MAX | Late payments strongly increase risk |
+| AMT_PAYMENT_SUM | Higher total payments = lower risk |
+| CREDIT_ANNUITY_RATIO | Higher loan-to-annuity ratio increases risk |
+| DAYS_EMPLOYED | Longer employment reduces risk |
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| ML | LightGBM, XGBoost, CatBoost, scikit-learn |
+| Stacking | Logistic Regression meta-model |
+| API | FastAPI, Uvicorn |
+| Frontend | Gradio |
+| Database | PostgreSQL (psycopg2) |
+| Experiment Tracking | MLflow |
+| Explainability | SHAP |
+| Deployment | Docker, Railway, Hugging Face Spaces |
 
 ---
 
@@ -85,103 +101,52 @@ An end-to-end machine learning system for predicting credit default risk, built 
 ```
 credit-risk-ml/
 ├── api/
-│   └── main.py               # FastAPI app — /predict, /applications, /health
-├── app/
-│   └── streamlit_app.py      # Streamlit frontend
+│   └── main.py              # FastAPI app — predict, history endpoints
 ├── src/
-│   ├── features.py           # Feature engineering pipeline
-│   ├── predict.py            # Ensemble inference logic
-│   ├── train.py              # Model training with 5-fold CV
-│   ├── evaluate.py           # OOF evaluation + threshold tuning
-│   ├── explain.py            # SHAP explainability
-│   └── db.py                 # PostgreSQL connection + queries
-├── models/
-│   ├── lgb_model.pkl
-│   ├── xgb_model.pkl
-│   ├── cat_model.pkl
-│   ├── stack_model.pkl
-│   └── feature_columns.pkl
-├── docker-compose.yml
-└── requirements.txt
+│   ├── features.py          # Feature engineering pipeline
+│   ├── predict.py           # Single prediction logic
+│   ├── db.py                # PostgreSQL schema and queries
+│   ├── train.py             # Model training with 5-fold CV
+│   ├── evaluate.py          # OOF evaluation and threshold tuning
+│   ├── explain.py           # SHAP waterfall and summary plots
+│   ├── log_mlflow.py        # MLflow experiment logging
+│   └── bulk_generate.py     # Synthetic data generator
+├── notebook/
+│   └── eda_02.ipynb         # Exploratory data analysis
+├── models/                  # Trained .pkl model files
+├── Dockerfile               # Railway deployment
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## API Endpoints
+## Running Locally
 
-| Method | Endpoint | Description |
-|---|---|---|
-| GET | `/health` | Health check |
-| POST | `/predict` | Run prediction for an applicant |
-| GET | `/applications` | Fetch all submissions |
-| GET | `/applications/{id}` | Fetch single submission |
-| GET | `/applications/{id}/features` | Fetch full 167-feature vector |
-
-Interactive docs available at `http://localhost:8000/docs`
-
----
-
-## Setup
-
-### Prerequisites
-- Python 3.10+
-- Docker Desktop
-
-### 1. Clone the repo
+**1. Clone and install:**
 ```bash
 git clone https://github.com/YogulKishore/credit-risk-ml.git
 cd credit-risk-ml
-```
-
-### 2. Install dependencies
-```bash
 pip install -r requirements.txt
 ```
 
-### 3. Start PostgreSQL
-```bash
-docker-compose up -d
-```
+**2. Add data** (download from [Kaggle](https://www.kaggle.com/c/home-credit-default-risk/data)) to `data/`
 
-### 4. Initialise the database
-```bash
-python src/db.py
-```
-
-### 5. Download the dataset
-Download from [Kaggle](https://www.kaggle.com/competitions/home-credit-default-risk/data) and place CSV files in `data/`
-
-### 6. Train models *(optional — pretrained models included)*
+**3. Train models:**
 ```bash
 python src/train.py
 ```
 
-### 7. Start the API
+**4. Start API:**
 ```bash
 uvicorn api.main:app --reload
 ```
 
-### 8. Start the frontend
-```bash
-streamlit run app/streamlit_app.py
-```
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| ML Models | LightGBM, XGBoost, CatBoost, Scikit-learn |
-| API | FastAPI, Uvicorn, Pydantic |
-| Frontend | Streamlit |
-| Database | PostgreSQL 15 |
-| Containerisation | Docker, Docker Compose |
-| Data | Pandas, NumPy |
-| Explainability | SHAP |
+**5. API docs:** `http://localhost:8000/docs`
 
 ---
 
 ## Dataset
 
-[Home Credit Default Risk](https://www.kaggle.com/competitions/home-credit-default-risk) — Kaggle competition dataset with 300,000+ loan applications across 9 related tables.
+[Home Credit Default Risk](https://www.kaggle.com/c/home-credit-default-risk) — Kaggle competition dataset.  
+307,511 training samples | 121 raw features | ~8% positive class (default)
