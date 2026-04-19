@@ -26,4 +26,4 @@ mlruns/
 mlflow.db
 catboost_info/
 screenshot_*.png
-notebook/anaconda_projects/
+anaconda_projects/
