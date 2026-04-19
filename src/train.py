@@ -1,7 +1,7 @@
-import pandas as pd
+import os, gc, subprocess
 import numpy as np
+import pandas as pd
 import joblib
-import gc
 
 from sklearn.model_selection import StratifiedKFold
 from sklearn.metrics import roc_auc_score
@@ -10,393 +10,284 @@ from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
-
-import mlflow
-import mlflow.sklearn
-import mlflow.lightgbm
-import mlflow.xgboost
 import lightgbm as lgb
 import xgboost as xgb
 from catboost import CatBoostClassifier
+import mlflow, mlflow.sklearn, mlflow.lightgbm, mlflow.xgboost
 
 from features import (
-    preprocess_application,
-    bureau_features,
-    bureau_balance_features,
-    previous_application_features,
-    pos_features,
-    installment_features,
-    credit_card_features
+    preprocess_application, bureau_features, bureau_balance_features,
+    previous_application_features, pos_features,
+    installment_features, credit_card_features
 )
 
+# -------------------------------------------------------
+# Helpers
+# -------------------------------------------------------
 
-# ----------------------------
-# Load Data
-# ----------------------------
-
-def load_data():
-
-    app_train = pd.read_csv("data/application_train.csv")
-    app_test = pd.read_csv("data/application_test.csv")
-
-    bureau = pd.read_csv("data/bureau.csv")
-    bureau_balance = pd.read_csv("data/bureau_balance.csv")
-    prev_app = pd.read_csv("data/previous_application.csv")
-    pos = pd.read_csv("data/POS_CASH_balance.csv")
-    installments = pd.read_csv("data/installments_payments.csv")
-    credit_card = pd.read_csv("data/credit_card_balance.csv")
-
-    return (
-        app_train,
-        app_test,
-        bureau,
-        bureau_balance,
-        prev_app,
-        pos,
-        installments,
-        credit_card
-    )
+def reduce_memory(df):
+    for col in df.select_dtypes("float64").columns:
+        df[col] = df[col].astype("float32")
+    for col in df.select_dtypes("int64").columns:
+        df[col] = df[col].astype("int32")
+    return df
 
 
-# ----------------------------
-# Feature Engineering
-# ----------------------------
+def get_device():
+    try:
+        if subprocess.run(["nvidia-smi"], capture_output=True).returncode == 0:
+            return "cuda", "GPU"
+    except FileNotFoundError:
+        pass
+    return "cpu", "CPU"
+
+
+def build_preprocessor(X):
+    num_cols = X.select_dtypes(exclude=["object", "str"]).columns.tolist()
+    cat_cols = X.select_dtypes(include=["object", "str"]).columns.tolist()
+
+    return ColumnTransformer([
+        ("num", Pipeline([
+            ("imp", SimpleImputer(strategy="median"))
+        ]), num_cols),
+        ("cat", Pipeline([
+            ("imp", SimpleImputer(strategy="constant", fill_value="Missing")),
+            ("enc", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+        ]), cat_cols),
+    ])
+
+# -------------------------------------------------------
+# Data loading & feature engineering
+# -------------------------------------------------------
 
 def build_features():
+    print("Loading CSVs...")
+    app_train      = reduce_memory(pd.read_csv("data/application_train.csv"))
+    app_test       = reduce_memory(pd.read_csv("data/application_test.csv"))
+    bureau         = reduce_memory(pd.read_csv("data/bureau.csv"))
+    bureau_balance = reduce_memory(pd.read_csv("data/bureau_balance.csv"))
+    prev_app       = reduce_memory(pd.read_csv("data/previous_application.csv"))
+    pos            = reduce_memory(pd.read_csv("data/POS_CASH_balance.csv"))
+    installments   = reduce_memory(pd.read_csv("data/installments_payments.csv"))
+    credit_card    = reduce_memory(pd.read_csv("data/credit_card_balance.csv"))
 
-    (
-        app_train,
-        app_test,
-        bureau,
-        bureau_balance,
-        prev_app,
-        pos,
-        installments,
-        credit_card
-    ) = load_data()
-
+    print("Engineering features...")
     app_train = preprocess_application(app_train)
-    app_test = preprocess_application(app_test)
+    app_test  = preprocess_application(app_test)
 
     bureau_feat = bureau_features(bureau)
     app_train = app_train.merge(bureau_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(bureau_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(bureau_feat,  on="SK_ID_CURR", how="left")
+    del bureau_feat; gc.collect()
 
     bureau_bal_feat = bureau_balance_features(bureau, bureau_balance)
     app_train = app_train.merge(bureau_bal_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(bureau_bal_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(bureau_bal_feat,  on="SK_ID_CURR", how="left")
+    del bureau, bureau_balance, bureau_bal_feat; gc.collect()
 
     prev_feat = previous_application_features(prev_app)
     app_train = app_train.merge(prev_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(prev_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(prev_feat,  on="SK_ID_CURR", how="left")
+    del prev_app, prev_feat; gc.collect()
 
     pos_feat = pos_features(pos)
     app_train = app_train.merge(pos_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(pos_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(pos_feat,  on="SK_ID_CURR", how="left")
+    del pos, pos_feat; gc.collect()
 
     inst_feat = installment_features(installments)
     app_train = app_train.merge(inst_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(inst_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(inst_feat,  on="SK_ID_CURR", how="left")
+    del installments, inst_feat; gc.collect()
 
     cc_feat = credit_card_features(credit_card)
     app_train = app_train.merge(cc_feat, on="SK_ID_CURR", how="left")
-    app_test = app_test.merge(cc_feat, on="SK_ID_CURR", how="left")
+    app_test  = app_test.merge(cc_feat,  on="SK_ID_CURR", how="left")
+    del credit_card, cc_feat; gc.collect()
 
     return app_train, app_test
 
-
-# ----------------------------
-# Preprocessing
-# ----------------------------
-
-def build_preprocessor(X):
-
-    num_cols = X.select_dtypes(exclude="object").columns
-    cat_cols = X.select_dtypes(include="object").columns
-
-    numeric_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="median"))
-    ])
-
-    categorical_pipeline = Pipeline([
-        ("imputer", SimpleImputer(strategy="constant", fill_value="Missing")),
-        ("encoder", OneHotEncoder(handle_unknown="ignore"))
-    ])
-
-    preprocessor = ColumnTransformer([
-        ("num", numeric_pipeline, num_cols),
-        ("cat", categorical_pipeline, cat_cols)
-    ])
-
-    return preprocessor
-
-
-# ----------------------------
-# Train Models
-# ----------------------------
+# -------------------------------------------------------
+# Training
+# -------------------------------------------------------
 
 def train_models(X, y, X_test, test_ids):
 
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    os.makedirs("models",  exist_ok=True)
+    os.makedirs("outputs", exist_ok=True)
 
+    # fill cat cols upfront so OHE doesn't get mixed types
+    cat_cols_all = X.select_dtypes(include=["object", "str"]).columns.tolist()
+    X[cat_cols_all]      = X[cat_cols_all].fillna("Missing").astype(str)
+    X_test[cat_cols_all] = X_test[cat_cols_all].fillna("Missing").astype(str)
+
+    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
     lgb_preds = np.zeros(len(X))
     xgb_preds = np.zeros(len(X))
     cat_preds = np.zeros(len(X))
+    test_lgb  = np.zeros(len(X_test))
+    test_xgb  = np.zeros(len(X_test))
+    test_cat  = np.zeros(len(X_test))
+    xgb_device, cat_device = get_device()
+    print(f"Device: {xgb_device.upper()}")
 
-    test_lgb = np.zeros(len(X_test))
-    test_xgb = np.zeros(len(X_test))
-    test_cat = np.zeros(len(X_test))
+    # ---- LightGBM ----
+    print("\n--- LightGBM ---")
+    for fold, (tr, va) in enumerate(skf.split(X, y)):
+        print(f"  Fold {fold+1}/5")
+        X_tr, X_va = X.iloc[tr], X.iloc[va]
+        y_tr, y_va = y.iloc[tr], y.iloc[va]
 
-    preprocessor = build_preprocessor(X)
+        pre = build_preprocessor(X_tr)
+        pre.fit(X_tr)
+        Xtr_p = pre.transform(X_tr)
+        Xva_p = pre.transform(X_va)
+        Xte_p = pre.transform(X_test)
 
-    # LIGHTGBM
-    lgb_model = Pipeline([
-        ("preprocess", preprocessor),
-        ("model", lgb.LGBMClassifier(
-    n_estimators=5000,
-    learning_rate=0.05,
-    max_depth=-1,
-    num_leaves=64,
-    min_child_samples=50,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-            n_jobs = -1
-))
-    ])
-
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-
-        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-    
-        # preprocess
-        lgb_model.named_steps["preprocess"].fit(X_train)
-    
-        X_train_p = lgb_model.named_steps["preprocess"].transform(X_train)
-        X_val_p = lgb_model.named_steps["preprocess"].transform(X_val)
-        X_test_p = lgb_model.named_steps["preprocess"].transform(X_test)
-    
-        # train
-        lgb_model.named_steps["model"].fit(
-            X_train_p,
-            y_train,
-            eval_set=[(X_val_p, y_val)],
-            eval_metric="auc",
-            callbacks=[lgb.early_stopping(100)]
+        m = lgb.LGBMClassifier(
+            n_estimators=5000, learning_rate=0.05, max_depth=-1,
+            num_leaves=64, min_child_samples=50,
+            subsample=0.8, colsample_bytree=0.8,
+            random_state=42, n_jobs=-1, verbose=-1
         )
-    
-        preds = lgb_model.named_steps["model"].predict_proba(X_val_p)[:,1]
-    
-        lgb_preds[val_idx] = preds
-    
-        test_lgb += (
-            lgb_model.named_steps["model"].predict_proba(X_test_p)[:,1]
-            / skf.n_splits
+        m.fit(Xtr_p, y_tr, eval_set=[(Xva_p, y_va)],
+              eval_metric="auc",
+              callbacks=[lgb.early_stopping(100), lgb.log_evaluation(500)])
+
+        lgb_preds[va] = m.predict_proba(Xva_p)[:, 1]
+        test_lgb     += m.predict_proba(Xte_p)[:, 1] / 5
+
+        if fold == 4:
+            lgb_pipeline = Pipeline([("preprocess", pre), ("model", m)])
+
+    print("LGB OOF AUC:", round(roc_auc_score(y, lgb_preds), 4))
+
+    # ---- XGBoost ----
+    print("\n--- XGBoost ---")
+    for fold, (tr, va) in enumerate(skf.split(X, y)):
+        print(f"  Fold {fold+1}/5")
+        X_tr, X_va = X.iloc[tr], X.iloc[va]
+        y_tr, y_va = y.iloc[tr], y.iloc[va]
+
+        pre = build_preprocessor(X_tr)
+        pre.fit(X_tr)
+        Xtr_p = pre.transform(X_tr)
+        Xva_p = pre.transform(X_va)
+        Xte_p = pre.transform(X_test)
+
+        m = xgb.XGBClassifier(
+            n_estimators=5000, learning_rate=0.05, max_depth=6,
+            subsample=0.8, colsample_bytree=0.8,
+            eval_metric="auc", tree_method="hist",
+            device=xgb_device, random_state=42,
+            early_stopping_rounds=100, verbosity=0
         )
+        m.fit(Xtr_p, y_tr, eval_set=[(Xva_p, y_va)], verbose=500)
 
-    print("LightGBM ROC-AUC:", roc_auc_score(y, lgb_preds))
+        xgb_preds[va] = m.predict_proba(Xva_p)[:, 1]
+        test_xgb     += m.predict_proba(Xte_p)[:, 1] / 5
 
+        if fold == 4:
+            xgb_pipeline = Pipeline([("preprocess", pre), ("model", m)])
 
-    # XGBOOST
-    xgb_pipeline = Pipeline([
-        ("preprocess", preprocessor),
-        ("model", xgb.XGBClassifier(
-    n_estimators=5000,
-    learning_rate=0.05,
-    max_depth=6,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    eval_metric="auc",
-    tree_method="hist",
-    device="cuda",
-    random_state=42,
-    early_stopping_rounds=100
-))
-    ])
-    
-    for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
-
-        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
-    
-        xgb_pipeline.named_steps["preprocess"].fit(X_train)
-    
-        X_train_p = xgb_pipeline.named_steps["preprocess"].transform(X_train)
-        X_val_p = xgb_pipeline.named_steps["preprocess"].transform(X_val)
-        X_test_p = xgb_pipeline.named_steps["preprocess"].transform(X_test)
-    
-        xgb_pipeline.named_steps["model"].fit(
-            X_train_p,
-            y_train,
-            eval_set=[(X_val_p, y_val)],
-            verbose=200
-        )
-    
-        preds = xgb_pipeline.named_steps["model"].predict_proba(X_val_p)[:,1]
-    
-        xgb_preds[val_idx] = preds
-    
-        test_xgb += (
-            xgb_pipeline.named_steps["model"].predict_proba(X_test_p)[:,1]
-            / skf.n_splits
-        )
-    
-    print("XGBoost ROC-AUC:", roc_auc_score(y, xgb_preds))
-
+    print("XGB OOF AUC:", round(roc_auc_score(y, xgb_preds), 4))
     gc.collect()
-    
-    # CATBOOST
-    cat_cols = X.select_dtypes("object").columns.tolist()
-    
-    X[cat_cols] = X[cat_cols].fillna("Missing").astype(str)
-    X_test[cat_cols] = X_test[cat_cols].fillna("Missing").astype(str)
-    
-    cat_model = CatBoostClassifier(
-    iterations=5000,
-    learning_rate=0.05,
-    depth=6,
-    eval_metric="AUC",
-    random_state=42,
-    task_type="GPU",
-    devices="0",
-    od_type="Iter",
-    od_wait=100,
-    verbose=200
-)
 
-    for train_idx, val_idx in skf.split(X, y):
+    # ---- CatBoost ----
+    print("\n--- CatBoost ---")
+    X_cat      = X.copy()
+    X_test_cat = X_test.copy()
+    cat_cols   = X_cat.select_dtypes(include=["object", "str"]).columns.tolist()
 
-        X_train, X_val = X.iloc[train_idx], X.iloc[val_idx]
-        y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+    for fold, (tr, va) in enumerate(skf.split(X_cat, y)):
+        print(f"  Fold {fold+1}/5")
+        X_tr, X_va = X_cat.iloc[tr], X_cat.iloc[va]
+        y_tr, y_va = y.iloc[tr], y.iloc[va]
 
-        cat_model.fit(
-            X_train,
-            y_train,
-            cat_features=[X.columns.get_loc(c) for c in cat_cols],
-            eval_set=(X_val, y_val),
-            early_stopping_rounds=100,
-            verbose = 200
+        m = CatBoostClassifier(
+            iterations=5000, learning_rate=0.05, depth=6,
+            eval_metric="AUC", random_seed=42,
+            task_type=cat_device, od_type="Iter", od_wait=100, verbose=500
         )
+        m.fit(X_tr, y_tr,
+              cat_features=[X_cat.columns.get_loc(c) for c in cat_cols],
+              eval_set=(X_va, y_va))
 
-        preds = cat_model.predict_proba(X_val)[:,1]
-        cat_preds[val_idx] = preds
+        cat_preds[va] = m.predict_proba(X_va)[:, 1]
+        test_cat     += m.predict_proba(X_test_cat)[:, 1] / 5
 
-        test_cat += cat_model.predict_proba(X_test)[:,1] / skf.n_splits
+    cat_model = m
+    print("Cat OOF AUC:", round(roc_auc_score(y, cat_preds), 4))
+    gc.collect()
 
-    print("CatBoost ROC-AUC:", roc_auc_score(y, cat_preds))
+    # ---- Stacking ----
+    print("\n--- Stacking ---")
+    stack_train = pd.DataFrame({"lgb": lgb_preds, "xgb": xgb_preds, "cat": cat_preds})
+    stack_test  = pd.DataFrame({"lgb": test_lgb,  "xgb": test_xgb,  "cat": test_cat})
 
+    meta = LogisticRegression(max_iter=1000, random_state=42)
+    meta.fit(stack_train, y)
+    final_preds = meta.predict_proba(stack_train)[:, 1]
+    print("Stacked OOF AUC:", round(roc_auc_score(y, final_preds), 4))
 
-    # STACKING
-    stack_train = pd.DataFrame({
-        "lgb": lgb_preds,
-        "xgb": xgb_preds,
-        "cat": cat_preds
-    })
+    # ---- Save ----
+    pd.DataFrame({
+        "TARGET": y.values, "lgb_oof": lgb_preds,
+        "xgb_oof": xgb_preds, "cat_oof": cat_preds, "stack_oof": final_preds
+    }).to_csv("models/oof_predictions.csv", index=False)
 
-    stack_test = pd.DataFrame({
-        "lgb": test_lgb,
-        "xgb": test_xgb,
-        "cat": test_cat
-    })
-
-    meta_model = LogisticRegression()
-    meta_model.fit(stack_train, y)
-
-    final_preds = meta_model.predict_proba(stack_train)[:,1]
-
-    print("Stacked ROC-AUC:", roc_auc_score(y, final_preds))
-
-    oof_df = pd.DataFrame({
-    "TARGET": y,
-    "lgb_oof": lgb_preds,
-    "xgb_oof": xgb_preds,
-    "cat_oof": cat_preds,
-    "stack_oof": final_preds
-})
-
-    oof_df.to_csv("models/oof_predictions.csv", index=False)
-
-    # ----------------------------
-    # MLflow Logging
-    # ----------------------------
-
-    mlflow.set_experiment("credit-risk")
-
-    with mlflow.start_run(run_name="stacked_ensemble"):
-
-        # log metrics
-        mlflow.log_metric("lgb_roc_auc",    roc_auc_score(y, lgb_preds))
-        mlflow.log_metric("xgb_roc_auc",    roc_auc_score(y, xgb_preds))
-        mlflow.log_metric("cat_roc_auc",    roc_auc_score(y, cat_preds))
-        mlflow.log_metric("stacked_roc_auc", roc_auc_score(y, final_preds))
-
-        # log params
-        mlflow.log_param("n_folds", 5)
-        mlflow.log_param("lgb_n_estimators", 5000)
-        mlflow.log_param("lgb_learning_rate", 0.05)
-        mlflow.log_param("lgb_num_leaves", 64)
-        mlflow.log_param("xgb_n_estimators", 5000)
-        mlflow.log_param("xgb_learning_rate", 0.05)
-        mlflow.log_param("xgb_max_depth", 6)
-        mlflow.log_param("cat_iterations", 5000)
-        mlflow.log_param("cat_learning_rate", 0.05)
-        mlflow.log_param("cat_depth", 6)
-        mlflow.log_param("meta_model", "LogisticRegression")
-
-        # log models
-        mlflow.sklearn.log_model(meta_model, "stack_model")
-        mlflow.lightgbm.log_model(lgb_model.named_steps["model"], "lgb_model")
-        mlflow.xgboost.log_model(xgb_pipeline.named_steps["model"], "xgb_model")
-
-        # log feature columns artifact
-        mlflow.log_artifact("models/feature_columns.pkl")
-        mlflow.log_artifact("models/oof_predictions.csv")
-
-        print("MLflow run logged.")
-
-    # SAVE MODELS
-    # SAVE FEATURE ORDER
     joblib.dump(X.columns.tolist(), "models/feature_columns.pkl")
-    
-    # SAVE MODELS
-    joblib.dump(lgb_model, "models/lgb_model.pkl")
-    joblib.dump(xgb_pipeline, "models/xgb_model.pkl")
-    joblib.dump(cat_model, "models/cat_model.pkl")
-    joblib.dump(meta_model, "models/stack_model.pkl")
-    
-    print("Models and feature columns saved.")
+    joblib.dump(lgb_pipeline,       "models/lgb_model.pkl")
+    joblib.dump(xgb_pipeline,       "models/xgb_model.pkl")
+    joblib.dump(cat_model,          "models/cat_model.pkl")
+    joblib.dump(meta,               "models/stack_model.pkl")
+    print("Models saved.")
 
-    # Final test predictions
+    # ---- MLflow ----
+    try:
+        mlflow.set_experiment("credit-risk")
+        with mlflow.start_run(run_name="stacked_ensemble"):
+            mlflow.log_metrics({
+                "lgb_roc_auc":     roc_auc_score(y, lgb_preds),
+                "xgb_roc_auc":     roc_auc_score(y, xgb_preds),
+                "cat_roc_auc":     roc_auc_score(y, cat_preds),
+                "stacked_roc_auc": roc_auc_score(y, final_preds),
+            })
+            mlflow.log_params({
+                "n_folds": 5, "lgb_num_leaves": 64,
+                "xgb_max_depth": 6, "cat_depth": 6,
+                "meta_model": "LogisticRegression", "device": xgb_device
+            })
+            mlflow.sklearn.log_model(meta, name="stack_model")
+            mlflow.lightgbm.log_model(lgb_pipeline.named_steps["model"], name="lgb_model")
+            mlflow.xgboost.log_model(xgb_pipeline.named_steps["model"],  name="xgb_model")
+            mlflow.log_artifact("models/feature_columns.pkl")
+            mlflow.log_artifact("models/oof_predictions.csv")
+            print("MLflow logged. Run ID:", mlflow.active_run().info.run_id)
+    except Exception as e:
+        print(f"MLflow skipped: {e}")
 
-    test_stack = pd.DataFrame({
-        "lgb": test_lgb,
-        "xgb": test_xgb,
-        "cat": test_cat
-    })
-    
-    test_final = meta_model.predict_proba(test_stack)[:,1]
-    
+    # ---- Submission ----
     submission = pd.DataFrame({
-    "SK_ID_CURR": test_ids,
-    "TARGET": test_final
-})
-    
+        "SK_ID_CURR": test_ids.values,
+        "TARGET":     meta.predict_proba(stack_test)[:, 1]
+    })
     submission.to_csv("outputs/test_predictions.csv", index=False)
-    
-    print("Test predictions saved.")
+    print("Submission saved.")
 
-# ----------------------------
-# MAIN
-# ----------------------------
+# -------------------------------------------------------
+# Main
+# -------------------------------------------------------
 
 def main():
-
     app_train, app_test = build_features()
 
-    y = app_train["TARGET"]
-    X = app_train.drop(columns=["TARGET", "SK_ID_CURR"])
+    y      = app_train["TARGET"]
+    X      = app_train.drop(columns=["TARGET", "SK_ID_CURR"])
     X_test = app_test.drop(columns=["SK_ID_CURR"])
+
+    print(f"Train shape: {X.shape} | Test shape: {X_test.shape}")
+    print(f"Target: {y.value_counts(normalize=True).round(3).to_dict()}")
 
     train_models(X, y, X_test, app_test["SK_ID_CURR"])
 
