@@ -116,7 +116,14 @@ def train_models(X, y, X_test, test_ids):
     os.makedirs("models",  exist_ok=True)
     os.makedirs("outputs", exist_ok=True)
 
-    # fill cat cols upfront so OHE doesn't get mixed types
+    # FIX 3: snapshot raw data for CatBoost BEFORE any filling
+    # CatBoost handles NaNs natively — don't pre-fill or it loses that signal
+    X_cat_raw      = X.copy()
+    X_test_cat_raw = X_test.copy()
+
+    # FIX 1: fill cat cols only for lgb/xgb (they need string, not NaN)
+    # the pipeline's SimpleImputer would also do this, but filling upfront
+    # avoids mixed-type warnings from pandas when iloc slicing inside the loop
     cat_cols_all = X.select_dtypes(include=["object", "str"]).columns.tolist()
     X[cat_cols_all]      = X[cat_cols_all].fillna("Missing").astype(str)
     X_test[cat_cols_all] = X_test[cat_cols_all].fillna("Missing").astype(str)
@@ -133,6 +140,7 @@ def train_models(X, y, X_test, test_ids):
 
     # ---- LightGBM ----
     print("\n--- LightGBM ---")
+    lgb_best_iters = []
     for fold, (tr, va) in enumerate(skf.split(X, y)):
         print(f"  Fold {fold+1}/5")
         X_tr, X_va = X.iloc[tr], X.iloc[va]
@@ -156,14 +164,13 @@ def train_models(X, y, X_test, test_ids):
 
         lgb_preds[va] = m.predict_proba(Xva_p)[:, 1]
         test_lgb     += m.predict_proba(Xte_p)[:, 1] / 5
-
-        if fold == 4:
-            lgb_pipeline = Pipeline([("preprocess", pre), ("model", m)])
+        lgb_best_iters.append(m.best_iteration_)
 
     print("LGB OOF AUC:", round(roc_auc_score(y, lgb_preds), 4))
 
     # ---- XGBoost ----
     print("\n--- XGBoost ---")
+    xgb_best_iters = []
     for fold, (tr, va) in enumerate(skf.split(X, y)):
         print(f"  Fold {fold+1}/5")
         X_tr, X_va = X.iloc[tr], X.iloc[va]
@@ -186,18 +193,18 @@ def train_models(X, y, X_test, test_ids):
 
         xgb_preds[va] = m.predict_proba(Xva_p)[:, 1]
         test_xgb     += m.predict_proba(Xte_p)[:, 1] / 5
-
-        if fold == 4:
-            xgb_pipeline = Pipeline([("preprocess", pre), ("model", m)])
+        xgb_best_iters.append(m.best_iteration)
 
     print("XGB OOF AUC:", round(roc_auc_score(y, xgb_preds), 4))
     gc.collect()
 
     # ---- CatBoost ----
     print("\n--- CatBoost ---")
-    X_cat      = X.copy()
-    X_test_cat = X_test.copy()
+    # FIX 3: use raw copy (NaNs intact) — CatBoost handles missingness natively
+    X_cat      = X_cat_raw
+    X_test_cat = X_test_cat_raw
     cat_cols   = X_cat.select_dtypes(include=["object", "str"]).columns.tolist()
+    cat_best_iters = []
 
     for fold, (tr, va) in enumerate(skf.split(X_cat, y)):
         print(f"  Fold {fold+1}/5")
@@ -215,25 +222,80 @@ def train_models(X, y, X_test, test_ids):
 
         cat_preds[va] = m.predict_proba(X_va)[:, 1]
         test_cat     += m.predict_proba(X_test_cat)[:, 1] / 5
+        cat_best_iters.append(m.best_iteration_)
 
     cat_model = m
     print("Cat OOF AUC:", round(roc_auc_score(y, cat_preds), 4))
     gc.collect()
 
     # ---- Stacking ----
+    # FIX 4: evaluate meta-learner honestly with its own CV
+    # base model OOF preds are already leak-free; meta must be too
     print("\n--- Stacking ---")
     stack_train = pd.DataFrame({"lgb": lgb_preds, "xgb": xgb_preds, "cat": cat_preds})
     stack_test  = pd.DataFrame({"lgb": test_lgb,  "xgb": test_xgb,  "cat": test_cat})
 
+    # honest OOF evaluation of meta-learner using its own 5-fold CV
+    meta_oof = np.zeros(len(X))
+    for tr, va in StratifiedKFold(n_splits=5, shuffle=True, random_state=0).split(stack_train, y):
+        meta_cv = LogisticRegression(max_iter=1000, random_state=42)
+        meta_cv.fit(stack_train.iloc[tr], y.iloc[tr])
+        meta_oof[va] = meta_cv.predict_proba(stack_train.iloc[va])[:, 1]
+    print("Stacked OOF AUC (honest):", round(roc_auc_score(y, meta_oof), 4))
+
+    # final meta-learner trained on ALL base OOF preds for saving/inference
     meta = LogisticRegression(max_iter=1000, random_state=42)
     meta.fit(stack_train, y)
-    final_preds = meta.predict_proba(stack_train)[:, 1]
-    print("Stacked OOF AUC:", round(roc_auc_score(y, final_preds), 4))
+
+    # ---- FIX 2: refit all models on full data before saving ----
+    # CV folds trained on 80% — saved model should know 100% of training data
+    print("\nRefitting on full data for saving...")
+
+    print("  Refitting LightGBM...")
+    pre_lgb = build_preprocessor(X)
+    pre_lgb.fit(X)
+    X_full_lgb = pre_lgb.transform(X)
+    lgb_final = lgb.LGBMClassifier(
+        n_estimators=int(np.mean(lgb_best_iters)),  # avg best iter across folds
+        learning_rate=0.05, max_depth=-1,
+        num_leaves=64, min_child_samples=50,
+        subsample=0.8, colsample_bytree=0.8,
+        random_state=42, n_jobs=-1, verbose=-1
+    )
+    lgb_final.fit(X_full_lgb, y)
+    lgb_pipeline = Pipeline([("preprocess", pre_lgb), ("model", lgb_final)])
+
+    print("  Refitting XGBoost...")
+    pre_xgb = build_preprocessor(X)
+    pre_xgb.fit(X)
+    X_full_xgb = pre_xgb.transform(X)
+    xgb_final = xgb.XGBClassifier(
+        n_estimators=int(np.mean(xgb_best_iters)),
+        learning_rate=0.05, max_depth=6,
+        subsample=0.8, colsample_bytree=0.8,
+        eval_metric="auc", tree_method="hist",
+        device=xgb_device, random_state=42, verbosity=0
+    )
+    xgb_final.fit(X_full_xgb, y)
+    xgb_pipeline = Pipeline([("preprocess", pre_xgb), ("model", xgb_final)])
+
+    print("  Refitting CatBoost...")
+    cat_final = CatBoostClassifier(
+        iterations=int(np.mean(cat_best_iters)),
+        learning_rate=0.05, depth=6,
+        eval_metric="AUC", random_seed=42,
+        task_type=cat_device, verbose=0
+    )
+    cat_final.fit(
+        X_cat, y,
+        cat_features=[X_cat.columns.get_loc(c) for c in cat_cols]
+    )
+    cat_model = cat_final
 
     # ---- Save ----
     pd.DataFrame({
         "TARGET": y.values, "lgb_oof": lgb_preds,
-        "xgb_oof": xgb_preds, "cat_oof": cat_preds, "stack_oof": final_preds
+        "xgb_oof": xgb_preds, "cat_oof": cat_preds, "stack_oof": meta_oof
     }).to_csv("models/oof_predictions.csv", index=False)
 
     joblib.dump(X.columns.tolist(), "models/feature_columns.pkl")
@@ -251,7 +313,7 @@ def train_models(X, y, X_test, test_ids):
                 "lgb_roc_auc":     roc_auc_score(y, lgb_preds),
                 "xgb_roc_auc":     roc_auc_score(y, xgb_preds),
                 "cat_roc_auc":     roc_auc_score(y, cat_preds),
-                "stacked_roc_auc": roc_auc_score(y, final_preds),
+                "stacked_roc_auc": roc_auc_score(y, meta_oof),
             })
             mlflow.log_params({
                 "n_folds": 5, "lgb_num_leaves": 64,
